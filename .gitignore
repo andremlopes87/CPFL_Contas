@@ -1,0 +1,7 @@
+.env
+config/clients_config.json
+data/incoming/
+data/archive/
+data/output/
+__pycache__/
+*.pyc
