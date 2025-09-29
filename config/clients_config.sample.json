@@ -1,0 +1,24 @@
+{
+  "clientes": [
+    {
+      "cliente": "Cliente Teste",
+      "numero_instalacao": "1234567890",
+      "numero_cliente": "9876543210",
+      "email_cliente": "cliente@example.com",
+      "login": "USUARIO_CPFL",
+      "senha": "SENHA_CPFL",
+      "cpf4": "1234",
+      "pasta_entrada": "data/incoming/cliente_teste"
+    },
+    {
+      "cliente": "Empresa ABC",
+      "numero_instalacao": "555666777",
+      "numero_cliente": "111222333",
+      "email_cliente": "financeiro@empresa.com",
+      "login": "LOGIN_EMPRESA",
+      "senha": "SENHA_EMPRESA",
+      "cpf4": "4321",
+      "pasta_entrada": "data/incoming/empresa_abc"
+    }
+  ]
+}

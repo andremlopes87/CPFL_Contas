@@ -1,0 +1,60 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 498 >>
+stream
+BT
+/F1 12 Tf
+72 720 Td
+(Instalao: 8367800042) Tj
+0 -14 Td
+(Conta/Ms: AGO/2025) Tj
+0 -14 Td
+(Vencimento: 15/09/2025) Tj
+0 -14 Td
+(Total a Pagar: R$ 94,42) Tj
+0 -14 Td
+(Quant. Faturada: 108 kWh) Tj
+0 -14 Td
+(Tarifa com Tributos: R$ 0,87410) Tj
+0 -14 Td
+(Valor Total da Operao: R$ 94,42) Tj
+0 -14 Td
+(Nmero do Cliente: 710877927) Tj
+0 -14 Td
+(Bandeira Tarifria: Amarela) Tj
+0 -14 Td
+(TUSD: R$ 45,11) Tj
+0 -14 Td
+(TE: R$ 39,31) Tj
+0 -14 Td
+(ICMS: R$ 8,50) Tj
+0 -14 Td
+(PIS/COFINS: R$ 1,50) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000790 00000 n 
+trailer
+<< /Root 1 0 R /Size 6 >>
+startxref
+860
+%%EOF
