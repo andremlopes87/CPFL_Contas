@@ -1,0 +1,31 @@
+{
+  "Resultado": {
+    "Faturas": [
+      {
+        "MesReferencia": "2024-01",
+        "DataVencimento": "2024-02-05T00:00:00",
+        "Valor": "123,45",
+        "ConsumoKwh": 321,
+        "NumeroDocumento": "202401123",
+        "Situacao": "PAGO",
+        "InstalacaoReal": "4001776236",
+        "Documento": "123.456.789-00",
+        "Links": {
+          "Pdf": "/historico-contas/faturas/202401123.pdf"
+        }
+      },
+      {
+        "mesRef": "02/2024",
+        "vencimento": "07/03/2024",
+        "valorConta": 456.78,
+        "consumo": "100",
+        "contaId": "202402999",
+        "StatusPagamento": "Pago",
+        "dadosExtras": {
+          "ParceiroNegocio": "999999",
+          "ContaContrato": "888888"
+        }
+      }
+    ]
+  }
+}

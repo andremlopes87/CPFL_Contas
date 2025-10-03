@@ -1,0 +1,24 @@
+{
+  "global": {
+    "base_url": "https://servicosonline.cpfl.com.br/agencia-webapi/api",
+    "client_id": "agencia-virtual-cpfl-web",
+    "download_pdfs": false,
+    "output_dir": "out",
+    "bookmarklet_port": 8765
+  },
+  "unidades_consumidoras": [
+    {
+      "id": "uc_exemplo",
+      "descricao": "UC Demonstração",
+      "key": "SUBSTITUA_PELA_KEY_DA_URL",
+      "access_token": "JWT_ACCESS",
+      "refresh_token": "JWT_REFRESH",
+      "expires_at": "2024-09-01T12:00:00Z",
+      "payload": {
+        "Instalacao": "CRIPTO_INSTALACAO",
+        "ContaContrato": "CRIPTO_CONTA",
+        "ParceiroNegocio": "CRIPTO_PARCEIRO"
+      }
+    }
+  ]
+}
