@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -10,7 +11,21 @@ from typing import Any, Dict, Iterable, List, Optional
 from .utils import isoformat, parse_datetime, slugify, utcnow
 
 
-DEFAULT_CONFIG_PATH = Path("config.json")
+APP_DIR_NAME = "CPFLFetcher"
+
+
+def _default_config_directory() -> Path:
+    if os.name == "nt":
+        base = os.environ.get("APPDATA")
+        if base:
+            return Path(base) / APP_DIR_NAME
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    if config_home:
+        return Path(config_home) / APP_DIR_NAME
+    return Path.home() / APP_DIR_NAME
+
+
+DEFAULT_CONFIG_PATH = _default_config_directory() / "config.json"
 
 
 @dataclass

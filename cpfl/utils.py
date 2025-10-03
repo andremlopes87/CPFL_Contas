@@ -6,6 +6,7 @@ import logging
 import os
 import queue
 import re
+import sys
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -57,7 +58,7 @@ class BookmarkletRequestHandler(BaseHTTPRequestHandler):
     server_version = "CPFLCollector/1.0"
 
     def do_POST(self) -> None:  # noqa: N802 - API required name
-        if self.path.rstrip("/") != "/cpfl-token":
+        if self.path.rstrip("/") != "/push":
             self.send_response(404)
             self.end_headers()
             return
@@ -127,7 +128,7 @@ class BookmarkletServer:
             "const payload={key:key||null,access_token:localStorage.getItem('access_token'),"
             "refresh_token:localStorage.getItem('refresh_token'),"
             "expires_at:localStorage.getItem('expires_in')||localStorage.getItem('token_expiration')||null};"
-            f"fetch('http://{self.host}:{self.port}/cpfl-token',{{method:'POST',headers:{{'Content-Type':'application/json'}},"
+            f"fetch('http://{self.host}:{self.port}/push',{{method:'POST',headers:{{'Content-Type':'application/json'}},"
             "body:JSON.stringify(payload)}}).then(()=>alert('Tokens enviados para o coletor CPFL.'))"
             ".catch(err=>alert('Falha ao enviar tokens: '+err));}catch(err){alert('Erro: '+err);}})();"
         )
@@ -221,6 +222,25 @@ def environ_bool(var_name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def resource_path(*parts: str) -> Path:
+    """Return a filesystem path for bundled resources.
+
+    Works for both normal execution and PyInstaller frozen binaries.
+    """
+
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+    return base.joinpath(*parts)
+
+
+def mask_secret(value: Optional[str]) -> str:
+    if not value:
+        return "<vazio>"
+    clean = value.strip()
+    if len(clean) <= 12:
+        return clean[:3] + "..." + clean[-3:]
+    return f"{clean[:6]}...{clean[-6:]}"
+
+
 __all__ = [
     "BookmarkletServer",
     "BookmarkletResult",
@@ -230,6 +250,8 @@ __all__ = [
     "environ_bool",
     "isoformat",
     "parse_datetime",
+    "resource_path",
+    "mask_secret",
     "safe_write_json",
     "setup_logging",
     "slugify",

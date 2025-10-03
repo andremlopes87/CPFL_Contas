@@ -8,8 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-from .config import ConfigStore, GlobalSettings, UCConfig
+from .config import ConfigStore, GlobalSettings, UCConfig, DEFAULT_CONFIG_PATH
 from .cpfl_client import AuthorizationError, CPFLClient, CPFLAPIError
+from .onboarding import ensure_config
 from .parser import InvoiceRecord, export_csv, parse_paid_history, parse_status_history
 from .utils import BookmarkletServer, ensure_directory, safe_write_json, setup_logging, slugify
 
@@ -64,30 +65,66 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _command_run(args: argparse.Namespace) -> int:
+    return run_collector(
+        args.config,
+        download_pdfs=args.download_pdfs,
+        period_start=args.period_start,
+        period_end=args.period_end,
+        bookmarklet_timeout=args.bookmarklet_timeout,
+        allow_onboarding=False,
+    )
+
+
+def run_collector(
+    config_path: Path | None = None,
+    *,
+    download_pdfs: Optional[bool] = None,
+    period_start: Optional[str] = None,
+    period_end: Optional[str] = None,
+    bookmarklet_timeout: int = 180,
+    allow_onboarding: bool = False,
+) -> int:
+    resolved_path = (config_path or DEFAULT_CONFIG_PATH).expanduser()
+    if allow_onboarding:
+        resolved_path = ensure_config(resolved_path)
     try:
-        store = ConfigStore(args.config)
+        store = ConfigStore(resolved_path)
+    except FileNotFoundError:
+        LOGGER.error(
+            "Arquivo de configuração %s não encontrado. Execute o onboarding ou informe --config.",
+            resolved_path,
+        )
+        return 2
     except Exception as exc:  # pragma: no cover - erro de configuração
         LOGGER.error("Erro carregando config: %s", exc)
         return 2
 
     settings = store.settings
-    if args.download_pdfs is not None:
-        settings.download_pdfs = bool(args.download_pdfs)
-    if args.period_start:
-        settings.period_start = args.period_start
-    if args.period_end:
-        settings.period_end = args.period_end
+    if download_pdfs is not None:
+        settings.download_pdfs = bool(download_pdfs)
+    if period_start:
+        settings.period_start = period_start
+    if period_end:
+        settings.period_end = period_end
 
-    all_records = []
+    all_records: List[InvoiceRecord] = []
     for uc in store.iter_uc():
         LOGGER.info("Processando UC %s (%s)", uc.uid, uc.descricao)
         try:
-            records = _process_uc(store, settings, uc, args.bookmarklet_timeout)
+            records = _process_uc(store, settings, uc, bookmarklet_timeout)
             all_records.extend(records)
+        except AuthorizationError as exc:
+            LOGGER.error(
+                "Autorização falhou para UC %s: %s. Revise tokens/refresh ou execute o bookmarklet.",
+                uc.uid,
+                exc,
+            )
         except CPFLAPIError as exc:
             LOGGER.error("Falha na UC %s: %s", uc.uid, exc)
     if not all_records:
-        LOGGER.warning("Nenhuma fatura coletada")
+        LOGGER.warning(
+            "Nenhuma fatura coletada. Verifique se o handshake retornou dados e se os payloads estão corretos."
+        )
         return 1
 
     csv_path = settings.output_dir / "faturas.csv"
@@ -121,7 +158,7 @@ def _process_uc(
     json_output = settings.output_dir / "json" / uc.slug
     ensure_directory(json_output)
     timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
-    safe_write_json(json_output / f"{timestamp}_handshake.json", handshake_payload)
+    safe_write_json(json_output / f"{timestamp}_validar_integracao.json", handshake_payload)
     safe_write_json(json_output / f"{timestamp}_contas_quitadas.json", paid_payload)
     safe_write_json(json_output / f"{timestamp}_validar_situacao.json", status_payload)
 

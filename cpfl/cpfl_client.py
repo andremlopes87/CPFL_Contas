@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,7 +18,13 @@ else:  # pragma: no cover - ambiente de testes sem requests
         requests = None  # type: ignore[assignment]
 
 from .config import GlobalSettings, UCConfig
-from .utils import BookmarkletServer, BookmarkletResult, create_retry_session, utcnow
+from .utils import (
+    BookmarkletServer,
+    BookmarkletResult,
+    create_retry_session,
+    mask_secret,
+    utcnow,
+)
 
 LOGGER = logging.getLogger("cpfl.client")
 
@@ -159,6 +166,11 @@ class CPFLClient:
         self.uc.tokens.refresh_token = token_bundle.refresh_token
         self.uc.tokens.expires_at = token_bundle.expires_at
         self.session.headers["Authorization"] = f"Bearer {token_bundle.access_token}"
+        LOGGER.info(
+            "Sessão atualizada (access=%s | refresh=%s)",
+            mask_secret(token_bundle.access_token),
+            mask_secret(token_bundle.refresh_token),
+        )
 
     def ensure_authenticated(self) -> tuple[bool, Optional[TokenBundle]]:
         if self.uc.tokens.access_token and self.check_roles():
@@ -215,11 +227,29 @@ class CPFLClient:
         with server.running():
             LOGGER.warning("Executar bookmarklet no navegador logado para enviar tokens.")
             LOGGER.warning("Bookmarklet: %s", server.bookmarklet_snippet)
+            LOGGER.warning(
+                "Abra a página 'Débitos e 2ª via / Histórico' e clique no favorito do bookmarklet."
+            )
+            try:
+                webbrowser.open(
+                    "https://servicosonline.cpfl.com.br/agencia-webapp/#/historico-contas",
+                    new=2,
+                    autoraise=True,
+                )
+            except Exception as exc:  # pragma: no cover - depende do SO
+                LOGGER.debug("Não foi possível abrir o navegador automaticamente: %s", exc)
             result = server.wait_for_tokens(timeout=timeout)
         if not result:
             LOGGER.error("Nenhum token recebido do bookmarklet dentro do tempo limite")
             return None
-        return self._bundle_from_bookmarklet(result)
+        bundle = self._bundle_from_bookmarklet(result)
+        if bundle:
+            LOGGER.info(
+                "Tokens recebidos (access=%s | refresh=%s)",
+                mask_secret(bundle.access_token),
+                mask_secret(bundle.refresh_token),
+            )
+        return bundle
 
     def _bundle_from_bookmarklet(self, result: BookmarkletResult) -> Optional[TokenBundle]:
         if not result.access_token:

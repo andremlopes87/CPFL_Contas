@@ -1,8 +1,8 @@
-"""Entry point to run the CPFL collector from the command line."""
+"""Interactive entry point used for the Windows executable."""
 from __future__ import annotations
 
-from cpfl.cli import main
+from cpfl.app import run
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run())

@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+import pandas as pd
 from dateutil import parser as date_parser
 
 LOGGER = logging.getLogger("cpfl.parser")
@@ -363,21 +364,15 @@ def export_csv(records: Iterable[InvoiceRecord], target: Path) -> None:
             if key not in keys:
                 keys.append(key)
 
-    rows.sort(key=lambda row: (row.get("_uc", ""), row.get("vencimento", ""), row.get("_tipo", "")))
+    df = pd.DataFrame(rows)
+    missing_cols = [key for key in keys if key not in df.columns]
+    for col in missing_cols:
+        df[col] = ""
+    df = df[keys]
+    df = df.sort_values(by=["_uc", "vencimento", "_tipo"], kind="stable")
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("w", encoding="utf-8", newline="") as stream:
-        header = ",".join(keys)
-        stream.write(header + "\n")
-        for row in rows:
-            values = [str(row.get(key, "") or "") for key in keys]
-            escaped: List[str] = []
-            for value in values:
-                if any(ch in value for ch in {"\"", ",", "\n"}):
-                    escaped.append('"' + value.replace('"', '""') + '"')
-                else:
-                    escaped.append(value)
-            stream.write(",".join(escaped) + "\n")
+    df.to_csv(target, index=False, encoding="utf-8-sig")
 
 
 __all__ = [
