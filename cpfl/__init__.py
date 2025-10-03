@@ -1,9 +1,6 @@
-"""CPFL invoice processing package."""
+"""CPFL Energia API collector."""
 
-__all__ = [
-    "config",
-    "pdf_parser",
-    "pipeline",
-    "storage",
-    "utils",
-]
+from . import cli
+from .cli import main
+
+__all__ = ["cli", "main"]

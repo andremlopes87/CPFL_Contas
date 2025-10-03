@@ -1,212 +1,237 @@
-"""Utility functions for parsing and normalization."""
+"""Shared utilities for the CPFL API collector."""
 from __future__ import annotations
 
-import hashlib
+import json
 import logging
+import os
+import queue
 import re
-from datetime import datetime
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from typing import Any, Dict, Optional
+import threading
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from typing import Any, Dict, Iterable, Iterator, Optional
 
-LOGGER = logging.getLogger(__name__)
+try:
+    import requests
+    from requests.adapters import HTTPAdapter
+except ImportError:  # pragma: no cover - fallback for environments sem requests
+    requests = None  # type: ignore[assignment]
+    HTTPAdapter = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - fallback para ambientes sem urllib3
+    from urllib3.util.retry import Retry  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover - fallback para ambientes sem urllib3
+    Retry = None  # type: ignore[assignment]
+
+LOGGER = logging.getLogger("cpfl")
 
 
-DECIMAL_RE = re.compile(r"[-+]?\d+[\d.,]*")
-DATE_RE = re.compile(r"(\d{1,2})[\-/](\d{1,2})[\-/](\d{2,4})")
-MONTH_RE = re.compile(r"(\d{1,2})[\-/](\d{2,4})")
+DEFAULT_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Content-Type": "application/json;charset=UTF-8",
+    "Origin": "https://servicosonline.cpfl.com.br",
+    "Referer": "https://servicosonline.cpfl.com.br/agencia-webapp/",
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/121.0 Safari/537.36"
+    ),
+}
 
 
-def clean_number(value: str) -> str:
-    digits = re.sub(r"\D", "", value)
-    return digits
+@dataclass
+class BookmarkletResult:
+    """Result returned by the bookmarklet server."""
+
+    access_token: Optional[str]
+    refresh_token: Optional[str]
+    expires_at: Optional[str]
+    key: Optional[str]
 
 
-def parse_decimal(value: Optional[str], places: Optional[int] = 2) -> Optional[Decimal]:
+class BookmarkletRequestHandler(BaseHTTPRequestHandler):
+    """HTTP handler that collects bookmarklet payloads."""
+
+    server_version = "CPFLCollector/1.0"
+
+    def do_POST(self) -> None:  # noqa: N802 - API required name
+        if self.path.rstrip("/") != "/cpfl-token":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        length = int(self.headers.get("Content-Length", "0"))
+        payload = self.rfile.read(length).decode("utf-8")
+        try:
+            data = json.loads(payload or "{}")
+        except json.JSONDecodeError:
+            LOGGER.error("Payload inválido recebido pelo bookmarklet")
+            self.send_response(400)
+            self.end_headers()
+            return
+
+        LOGGER.info("Tokens recebidos via bookmarklet")
+        result = BookmarkletResult(
+            access_token=data.get("access_token") or data.get("token"),
+            refresh_token=data.get("refresh_token"),
+            expires_at=data.get("expires_at") or data.get("exp"),
+            key=data.get("key"),
+        )
+        self.server.result_queue.put(result)  # type: ignore[attr-defined]
+        self.send_response(204)
+        self.end_headers()
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A003 - required signature
+        LOGGER.debug("Bookmarklet server: " + format, *args)
+
+
+class BookmarkletServer:
+    """Simple local HTTP server used to capture bookmarklet tokens."""
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 8765) -> None:
+        self.host = host
+        self.port = port
+        self._queue: "queue.Queue[BookmarkletResult]" = queue.Queue()
+        self._server = HTTPServer((self.host, self.port), BookmarkletRequestHandler)
+        self._server.result_queue = self._queue  # type: ignore[attr-defined]
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        LOGGER.info("Iniciando servidor local para receber tokens do bookmarklet em %s:%s", self.host, self.port)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if not self._thread:
+            return
+        LOGGER.info("Encerrando servidor local do bookmarklet")
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=2)
+        self._thread = None
+
+    def wait_for_tokens(self, timeout: int = 180) -> Optional[BookmarkletResult]:
+        try:
+            return self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    @property
+    def bookmarklet_snippet(self) -> str:
+        return (
+            "javascript:(function(){try{const key=(location.hash.split('key=')[1]||'').split('&')[0];"
+            "const payload={key:key||null,access_token:localStorage.getItem('access_token'),"
+            "refresh_token:localStorage.getItem('refresh_token'),"
+            "expires_at:localStorage.getItem('expires_in')||localStorage.getItem('token_expiration')||null};"
+            f"fetch('http://{self.host}:{self.port}/cpfl-token',{{method:'POST',headers:{{'Content-Type':'application/json'}},"
+            "body:JSON.stringify(payload)}}).then(()=>alert('Tokens enviados para o coletor CPFL.'))"
+            ".catch(err=>alert('Falha ao enviar tokens: '+err));}catch(err){alert('Erro: '+err);}})();"
+        )
+
+    @contextmanager
+    def running(self) -> Iterator["BookmarkletServer"]:
+        try:
+            self.start()
+            yield self
+        finally:
+            self.stop()
+
+
+def create_retry_session(
+    retries: int = 3,
+    backoff_factor: float = 0.5,
+    status_forcelist: Iterable[int] | None = None,
+):
+    if requests is None:
+        raise RuntimeError(
+            "Biblioteca 'requests' não está instalada. Instale-a para executar a coleta real."
+        )
+    session = requests.Session()
+    if Retry and HTTPAdapter:
+        retry = Retry(
+            total=retries,
+            read=retries,
+            connect=retries,
+            backoff_factor=backoff_factor,
+            status_forcelist=status_forcelist or (500, 502, 503, 504, 429),
+            allowed_methods=("GET", "POST", "PUT", "DELETE", "OPTIONS"),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+    session.headers.update(DEFAULT_HEADERS.copy())
+    return session
+
+
+def setup_logging(level: str = "INFO") -> None:
+    log_level = getattr(logging, level.upper(), logging.INFO)
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    )
+
+
+def ensure_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def isoformat(dt: Optional[datetime]) -> Optional[str]:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def parse_datetime(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
-    normalized = value.replace("R$", "").replace(" ", "")
-    normalized = normalized.replace(".", "").replace(",", ".")
     try:
-        decimal_value = Decimal(normalized)
-    except (InvalidOperation, ValueError) as exc:
-        LOGGER.debug("Unable to parse decimal from %s: %s", value, exc)
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        LOGGER.debug("Não foi possível interpretar data ISO %s", value)
         return None
-    if places is None:
-        return decimal_value
-    quantizer = Decimal(1) / (Decimal(10) ** places)
-    return decimal_value.quantize(quantizer, rounding=ROUND_HALF_UP)
+    return dt
 
 
-def parse_month(value: Optional[str]) -> Optional[str]:
-    if not value:
-        return None
-    match = MONTH_RE.search(value)
-    if not match:
-        return None
-    month = int(match.group(1))
-    year = match.group(2)
-    if len(year) == 2:
-        year = f"20{year}"
-    return f"{month:02d}/{year}"
+def safe_write_json(target: Path, data: Any) -> None:
+    ensure_directory(target.parent)
+    target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def parse_date(value: Optional[str]) -> Optional[str]:
-    if not value:
-        return None
-    match = DATE_RE.search(value)
-    if not match:
-        return None
-    day = int(match.group(1))
-    month = int(match.group(2))
-    year = match.group(3)
-    if len(year) == 2:
-        year = f"20{year}"
-    try:
-        parsed = datetime(int(year), month, day)
-    except ValueError as exc:
-        LOGGER.debug("Invalid date %s: %s", value, exc)
-        return None
-    return parsed.strftime("%d/%m/%Y")
+def slugify(value: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9_-]+", "-", value.strip().lower())
+    normalized = re.sub(r"-+", "-", normalized)
+    return normalized.strip("-") or "uc"
 
 
-def compute_invoice_hash(numero_instalacao: str, mes_referencia: str, valor_total: str) -> str:
-    raw = f"{numero_instalacao}|{mes_referencia}|{valor_total}"
-    return hashlib.md5(raw.encode("utf-8")).hexdigest()
-
-
-def ensure_decimal_str(value: Optional[Decimal], places: int = 2) -> Optional[str]:
-    if value is None:
-        return None
-    pattern = f"{{0:.{places}f}}"
-    return pattern.format(value)
-
-
-def decimal_to_string(value: Optional[Decimal]) -> Optional[str]:
-    if value is None:
-        return None
-    normalized = value.normalize()
-    text = format(normalized, "f")
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    return text
-
-
-def ensure_numeric(value: Optional[str]) -> Optional[str]:
-    if not value:
-        return None
-    digits = clean_number(value)
-    return digits or None
-
-
-def validate_invoice(invoice: Dict[str, Any]) -> bool:
-    """Perform basic validation checks."""
-
-    valor_total = invoice.get("valor_total")
-    consumo_kwh = invoice.get("consumo_kwh")
-    mes_referencia = invoice.get("mes_referencia")
-    vencimento = invoice.get("vencimento")
-
-    try:
-        if valor_total is not None and Decimal(str(valor_total)) <= 0:
-            LOGGER.warning("Valor total inválido: %s", valor_total)
-            return False
-    except InvalidOperation:
-        LOGGER.warning("Valor total não numérico: %s", valor_total)
-        return False
-
-    if consumo_kwh is not None:
-        try:
-            if Decimal(str(consumo_kwh)) < 0:
-                LOGGER.warning("Consumo negativo: %s", consumo_kwh)
-                return False
-        except InvalidOperation:
-            LOGGER.warning("Consumo não numérico: %s", consumo_kwh)
-            return False
-
-    if mes_referencia is None:
-        LOGGER.warning("Mês de referência ausente")
-        return False
-
-    if vencimento is not None:
-        parsed = parse_date(vencimento)
-        if not parsed:
-            LOGGER.warning("Data de vencimento inválida: %s", vencimento)
-            return False
-        invoice["vencimento"] = parsed
-
-    # Reformat month to ensure normalization
-    normalized_month = parse_month(mes_referencia)
-    if not normalized_month:
-        LOGGER.warning("Mês de referência inválido: %s", mes_referencia)
-        return False
-    invoice["mes_referencia"] = normalized_month
-
-    decimal_fields = {
-        "valor_total": 2,
-        "tusd": 2,
-        "te": 2,
-        "icms": 2,
-        "pis_cofins": 2,
-        "valor_total_operacao": 2,
-    }
-    for key, places in decimal_fields.items():
-        if invoice.get(key) is None:
-            continue
-        try:
-            invoice[key] = ensure_decimal_str(Decimal(str(invoice[key])), places=places)
-        except InvalidOperation:
-            LOGGER.warning("Valor inválido para %s: %s", key, invoice.get(key))
-            invoice[key] = None
-
-    if invoice.get("tarifa_com_tributos") is not None:
-        try:
-            valor_tarifa = Decimal(str(invoice["tarifa_com_tributos"]))
-            invoice["tarifa_com_tributos"] = ensure_decimal_str(valor_tarifa, places=5)
-        except InvalidOperation:
-            LOGGER.warning(
-                "Tarifa com tributos inválida: %s", invoice.get("tarifa_com_tributos")
-            )
-            invoice["tarifa_com_tributos"] = None
-
-    if invoice.get("consumo_kwh") is not None:
-        try:
-            invoice["consumo_kwh"] = str(Decimal(str(invoice["consumo_kwh"])))
-        except InvalidOperation:
-            invoice["consumo_kwh"] = None
-
-    if invoice.get("quantidade_faturada") is not None:
-        try:
-            quantidade = Decimal(str(invoice["quantidade_faturada"]))
-            if quantidade < 0:
-                LOGGER.warning(
-                    "Quantidade faturada negativa: %s", invoice["quantidade_faturada"]
-                )
-                return False
-            invoice["quantidade_faturada"] = decimal_to_string(quantidade)
-        except InvalidOperation:
-            LOGGER.warning(
-                "Quantidade faturada inválida: %s", invoice.get("quantidade_faturada")
-            )
-            invoice["quantidade_faturada"] = None
-
-    return True
-
-
-def merge_invoice_data(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
-    result = base.copy()
-    for key, value in updates.items():
-        if value not in (None, ""):
-            result[key] = value
-    return result
+def environ_bool(var_name: str, default: bool = False) -> bool:
+    raw = os.getenv(var_name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 __all__ = [
-    "parse_decimal",
-    "parse_date",
-    "parse_month",
-    "compute_invoice_hash",
-    "ensure_decimal_str",
-    "ensure_numeric",
-    "validate_invoice",
-    "merge_invoice_data",
+    "BookmarkletServer",
+    "BookmarkletResult",
+    "DEFAULT_HEADERS",
+    "create_retry_session",
+    "ensure_directory",
+    "environ_bool",
+    "isoformat",
+    "parse_datetime",
+    "safe_write_json",
+    "setup_logging",
+    "slugify",
+    "utcnow",
 ]
