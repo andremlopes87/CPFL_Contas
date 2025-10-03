@@ -1,0 +1,21 @@
+{
+  "resultado": {
+    "lista": [
+      {
+        "MesReferencia": "2024-03",
+        "DataUltimoVencimento": "2024-04-10",
+        "ValorTotal": "789,01",
+        "Consumo": 555.5,
+        "NumeroConta": "202403777",
+        "Status": "Em aberto",
+        "Documentos": [
+          {
+            "tipo": "pdf",
+            "url": "https://servicosonline.cpfl.com.br/agencia-webapi/api/segunda-via/202403777.pdf"
+          }
+        ],
+        "Instalacao": "4001776236"
+      }
+    ]
+  }
+}
