@@ -1,134 +1,236 @@
-"""Configuration helpers for CPFL pipeline."""
+"""Configuration helpers for the CPFL API collector."""
 from __future__ import annotations
 
 import json
-import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
-from dotenv import load_dotenv
+from .utils import isoformat, parse_datetime, slugify, utcnow
 
-LOGGER = logging.getLogger(__name__)
+
+APP_DIR_NAME = "CPFLFetcher"
+
+
+def _default_config_directory() -> Path:
+    if os.name == "nt":
+        base = os.environ.get("APPDATA")
+        if base:
+            return Path(base) / APP_DIR_NAME
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    if config_home:
+        return Path(config_home) / APP_DIR_NAME
+    return Path.home() / APP_DIR_NAME
+
+
+DEFAULT_CONFIG_PATH = _default_config_directory() / "config.json"
 
 
 @dataclass
-class ClientConfig:
-    """Configuration for a single client installation."""
+class GlobalSettings:
+    base_url: str = "https://servicosonline.cpfl.com.br/agencia-webapi/api"
+    client_id: str = "agencia-virtual-cpfl-web"
+    output_dir: Path = Path("out")
+    download_pdfs: bool = False
+    request_timeout: int = 20
+    max_retries: int = 3
+    backoff_factor: float = 0.6
+    bookmarklet_port: int = 8765
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
 
-    cliente: str
-    numero_instalacao: str
-    numero_cliente: Optional[str]
-    email_cliente: Optional[str]
-    login: Optional[str]
-    senha: Optional[str]
-    cpf4: Optional[str]
-    pasta_entrada: Optional[str]
+    def resolve_paths(self, base_path: Path) -> None:
+        if not self.output_dir.is_absolute():
+            self.output_dir = (base_path / self.output_dir).resolve()
+
+
+@dataclass
+class AuthTokens:
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
+    expires_at: Optional[datetime] = None
+
+
+@dataclass
+class UCConfig:
+    uid: str
+    descricao: str
+    payload: Dict[str, Any]
+    key: Optional[str]
+    tokens: AuthTokens = field(default_factory=AuthTokens)
+    extra_headers: Dict[str, str] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def slug(self) -> str:
-        return self.cliente.lower().replace(" ", "_")
+        return slugify(self.descricao or self.uid)
 
 
-@dataclass
-class AppConfig:
-    """Top level configuration for the pipeline."""
+class ConfigStore:
+    """Wrapper that loads and persists the collector configuration."""
 
-    inbox_dir: Path
-    archive_dir: Path
-    output_dir: Path
-    config_path: Path
-
-    @property
-    def json_output_dir(self) -> Path:
-        return self.output_dir / "json"
-
-    @property
-    def master_table_path(self) -> Path:
-        return self.output_dir / "cpfl_faturas_master.csv"
-
-    @property
-    def master_excel_path(self) -> Path:
-        return self.output_dir / "cpfl_faturas_master.xlsx"
-
-
-DEFAULT_CONFIG_LOCATIONS: Iterable[Path] = (
-    Path("config/clients_config.json"),
-    Path("config/clients_config.sample.json"),
-)
-
-
-def load_environment() -> None:
-    """Load environment variables from .env if present."""
-
-    env_path = Path(".env")
-    if env_path.exists():
-        load_dotenv(dotenv_path=env_path)
-        LOGGER.debug("Environment variables loaded from %s", env_path)
-    else:
-        load_dotenv()
-        LOGGER.debug("Environment variables loaded from default search path")
-
-
-def resolve_app_config(config_path: Optional[str] = None) -> AppConfig:
-    """Build application configuration from environment and defaults."""
-
-    load_environment()
-
-    inbox = Path(os.getenv("CPFL_INBOX_DIR", "data/incoming"))
-    archive = Path(os.getenv("CPFL_ARCHIVE_DIR", "data/archive"))
-    output = Path(os.getenv("CPFL_OUTPUT_DIR", "data/output"))
-
-    if config_path:
-        config_file = Path(config_path)
-    else:
-        for candidate in DEFAULT_CONFIG_LOCATIONS:
-            if candidate.exists():
-                config_file = candidate
-                break
-        else:
+    def __init__(self, path: Optional[Path] = None) -> None:
+        self.path = (path or DEFAULT_CONFIG_PATH).expanduser().resolve()
+        if not self.path.exists():
             raise FileNotFoundError(
-                "Nenhum arquivo de configuração encontrado. Crie config/clients_config.json a partir do sample."
+                f"Arquivo de configuração {self.path} não encontrado. Crie a partir de config.example.json."
             )
 
-    archive.mkdir(parents=True, exist_ok=True)
-    output.mkdir(parents=True, exist_ok=True)
-    (output / "json").mkdir(parents=True, exist_ok=True)
+        with self.path.open("r", encoding="utf-8") as stream:
+            self._raw_data: Dict[str, Any] = json.load(stream)
 
-    return AppConfig(
-        inbox_dir=inbox,
-        archive_dir=archive,
-        output_dir=output,
-        config_path=config_file,
-    )
+        base_path = self.path.parent
+        self.settings = self._load_global_settings(base_path)
+        self.uc_configs: List[UCConfig] = self._load_uc_configs(base_path)
+        self._index = {uc.uid: idx for idx, uc in enumerate(self.uc_configs)}
 
+    def _load_global_settings(self, base_path: Path) -> GlobalSettings:
+        payload = self._raw_data.get("global", {})
+        settings = GlobalSettings(
+            base_url=payload.get("base_url", GlobalSettings.base_url),
+            client_id=payload.get("client_id", GlobalSettings.client_id),
+            output_dir=Path(payload.get("output_dir", "out")),
+            download_pdfs=bool(payload.get("download_pdfs", False)),
+            request_timeout=int(payload.get("request_timeout", 20)),
+            max_retries=int(payload.get("max_retries", 3)),
+            backoff_factor=float(payload.get("backoff_factor", 0.6)),
+            bookmarklet_port=int(payload.get("bookmarklet_port", 8765)),
+            period_start=payload.get("period_start"),
+            period_end=payload.get("period_end"),
+        )
+        settings.resolve_paths(base_path)
+        return settings
 
-def load_clients(config_path: Path) -> List[ClientConfig]:
-    """Load client definitions from JSON file."""
-
-    with config_path.open("r", encoding="utf-8") as fp:
-        payload: Dict[str, List[Dict[str, Optional[str]]]] = json.load(fp)
-
-    clients: List[ClientConfig] = []
-    for entry in payload.get("clientes", []):
-        clients.append(
-            ClientConfig(
-                cliente=entry.get("cliente", ""),
-                numero_instalacao=str(entry.get("numero_instalacao", "")),
-                numero_cliente=(entry.get("numero_cliente") or None),
-                email_cliente=(entry.get("email_cliente") or None),
-                login=(entry.get("login") or None),
-                senha=(entry.get("senha") or None),
-                cpf4=(entry.get("cpf4") or None),
-                pasta_entrada=(entry.get("pasta_entrada") or None),
+    def _load_uc_configs(self, base_path: Path) -> List[UCConfig]:
+        entries = self._raw_data.get("unidades_consumidoras", [])
+        configs: List[UCConfig] = []
+        for index, entry in enumerate(entries):
+            uid = entry.get("id") or entry.get("uid") or f"uc-{index+1}"
+            descricao = entry.get("descricao") or entry.get("apelido") or uid
+            payload = self._resolve_payload(entry, base_path)
+            tokens = AuthTokens(
+                access_token=entry.get("access_token"),
+                refresh_token=entry.get("refresh_token"),
+                expires_at=parse_datetime(entry.get("expires_at")),
             )
+            uc = UCConfig(
+                uid=str(uid),
+                descricao=str(descricao),
+                payload=payload,
+                key=entry.get("key"),
+                tokens=tokens,
+                extra_headers=entry.get("headers") or {},
+                metadata=self._extract_metadata(entry),
+            )
+            configs.append(uc)
+        if not configs:
+            raise ValueError("Nenhuma unidade consumidora configurada em config.json")
+        return configs
+
+    def _resolve_payload(self, entry: Dict[str, Any], base_path: Path) -> Dict[str, Any]:
+        if "payload" in entry:
+            payload = entry.get("payload")
+            if isinstance(payload, dict):
+                return payload
+        if "body" in entry and isinstance(entry["body"], dict):
+            return entry["body"]
+
+        payload_file = entry.get("payload_file") or entry.get("inst_cache_file")
+        if payload_file:
+            payload_path = (base_path / payload_file).expanduser()
+            if not payload_path.exists():
+                raise FileNotFoundError(f"Arquivo de payload {payload_path} não encontrado")
+            with payload_path.open("r", encoding="utf-8") as stream:
+                payload_data = json.load(stream)
+            payload_key = entry.get("payload_key") or entry.get("inst_cache_key")
+            if payload_key:
+                if payload_key not in payload_data:
+                    raise KeyError(
+                        f"Chave {payload_key} não encontrada em {payload_path}"
+                    )
+                candidate = payload_data[payload_key]
+                if not isinstance(candidate, dict):
+                    raise ValueError(f"Entrada {payload_key} de {payload_path} não é um objeto JSON")
+                return candidate
+            if isinstance(payload_data, dict):
+                return payload_data
+        raise ValueError(
+            "Configuração da UC não contém payload válido (use 'payload' ou 'payload_file')."
         )
 
-    if not clients:
-        raise ValueError("Arquivo de configuração não possui clientes cadastrados.")
+    def _extract_metadata(self, entry: Dict[str, Any]) -> Dict[str, Any]:
+        ignored = {
+            "id",
+            "uid",
+            "descricao",
+            "apelido",
+            "payload",
+            "body",
+            "payload_file",
+            "payload_key",
+            "inst_cache_file",
+            "inst_cache_key",
+            "access_token",
+            "refresh_token",
+            "expires_at",
+            "key",
+            "headers",
+        }
+        return {k: v for k, v in entry.items() if k not in ignored}
 
-    return clients
+    def save(self) -> None:
+        with self.path.open("w", encoding="utf-8") as stream:
+            json.dump(self._raw_data, stream, ensure_ascii=False, indent=2)
+
+    # Public API -----------------------------------------------------------------
+    def iter_uc(self) -> Iterable[UCConfig]:
+        return list(self.uc_configs)
+
+    def get_uc(self, uid: str) -> UCConfig:
+        return self.uc_configs[self._index[uid]]
+
+    def update_tokens(
+        self,
+        uid: str,
+        *,
+        access_token: Optional[str] = None,
+        refresh_token: Optional[str] = None,
+        expires_at: Optional[datetime] = None,
+        key: Optional[str] = None,
+    ) -> UCConfig:
+        uc = self.get_uc(uid)
+        raw_entry = self._raw_data["unidades_consumidoras"][self._index[uid]]
+
+        if access_token is not None:
+            uc.tokens.access_token = access_token
+            raw_entry["access_token"] = access_token
+        if refresh_token is not None:
+            uc.tokens.refresh_token = refresh_token
+            raw_entry["refresh_token"] = refresh_token
+        if expires_at is not None:
+            uc.tokens.expires_at = expires_at
+            raw_entry["expires_at"] = isoformat(expires_at) if expires_at else None
+        if key is not None:
+            uc.key = key
+            raw_entry["key"] = key
+
+        raw_entry["updated_at"] = isoformat(utcnow())
+        self.save()
+        return uc
+
+    def set_key(self, uid: str, key: str) -> None:
+        self.update_tokens(uid, key=key)
+
+    def update_payload(self, uid: str, payload: Dict[str, Any]) -> UCConfig:
+        uc = self.get_uc(uid)
+        uc.payload = dict(payload)
+        raw_entry = self._raw_data["unidades_consumidoras"][self._index[uid]]
+        raw_entry["payload"] = dict(payload)
+        raw_entry["updated_at"] = isoformat(utcnow())
+        self.save()
+        return uc
 
 
-__all__ = ["ClientConfig", "AppConfig", "resolve_app_config", "load_clients", "load_environment"]
+__all__ = ["ConfigStore", "GlobalSettings", "UCConfig", "AuthTokens", "DEFAULT_CONFIG_PATH"]
