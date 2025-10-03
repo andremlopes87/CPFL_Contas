@@ -2,9 +2,16 @@
 
 Aplicativo em Python empacotado em um executável único (`CPFLFetcher.exe`) para coletar faturas da CPFL Energia usando exclusivamente as chamadas HTTP oficiais da SPA. O fluxo cobre autenticação automática, fallback via bookmarklet, download opcional de PDFs e exportação consolidada em CSV.
 
+## Passo a passo rápido
+
+1. Execute `build_exe.bat` em um prompt do Windows com Python 3.11 instalado. O script cria `dist\CPFLFetcher.exe`.
+2. Copie `CPFLFetcher.exe` para a máquina/usuário que fará a coleta e execute com duplo clique.
+3. No primeiro uso, informe pelo console os dados solicitados (descrição da UC, preferências, `key`, tokens e payload). O app grava tudo automaticamente em `%APPDATA%\CPFLFetcher\config.json`.
+4. Rode novamente o executável (ou continue após preencher os dados) para coletar faturas, gerar `out\faturas.csv` e, se habilitado, baixar PDFs.
+
 ## Principais recursos
 
-* **Onboarding guiado** – Na primeira execução o app cria `%APPDATA%\CPFLFetcher\config.json` a partir do template incluso e solicita apenas as preferências básicas (descrição da UC, flag de PDFs e filtros de período).
+* **Onboarding guiado** – Na primeira execução o app cria `%APPDATA%\CPFLFetcher\config.json` a partir do template incluso e solicita pelo console tanto as preferências básicas quanto `key`, tokens e payload criptografado.
 * **Autenticação resiliente** – Valida tokens em `/user/roles`, tenta renovar via `/token` e, em último caso, habilita o servidor local `http://127.0.0.1:8765/push` para receber o token/key pelo bookmarklet (1 clique).
 * **Coleta completa** – Realiza o handshake `/user/validar-integracao`, consulta `/historico-contas/contas-quitadas` e `/historico-contas/validar-situacao`, salvando todos os JSONs e consolidando o histórico em CSV (UTF-8 com BOM) ordenado por UC/vencimento.
 * **PDF opcional** – Quando a API retorna URLs válidas, baixa os arquivos para `out/downloads/<uc>/` usando os mesmos headers da sessão autenticada.
@@ -17,8 +24,12 @@ Aplicativo em Python empacotado em um executável único (`CPFLFetcher.exe`) par
    * Confirme/edite a descrição das UCs existentes no template.
    * Escolha se deseja baixar PDFs automaticamente.
    * Informe, se quiser, o período padrão (`AAAA-MM`) a ser filtrado.
-3. O arquivo de configuração será criado em `%APPDATA%\CPFLFetcher\config.json`. Complete nesse arquivo os tokens, `key` e payloads (`Instalacao`, `ContaContrato`, `ParceiroNegocio`, etc.) conforme suas credenciais reais.
-4. Rode o executável novamente para iniciar a coleta real.
+3. Cole no console os dados da UC quando solicitado:
+   * `key` da URL `#/integracao-agd?key=...`.
+   * `access_token` e `refresh_token` (se disponíveis) – deixe em branco para capturar depois com o bookmarklet.
+   * Campos do payload criptografado (`Instalacao`, `ContaContrato`, `ParceiroNegocio`, etc.).
+4. O arquivo de configuração é salvo automaticamente em `%APPDATA%\CPFLFetcher\config.json`. Rode o executável para iniciar a coleta real.
+   * Sempre que algum campo essencial estiver ausente, o app voltará a solicitar no console.
 
 As saídas (`out/`) ficam na mesma pasta do `config.json`, garantindo que o executável possa ser movido sem perder histórico.
 

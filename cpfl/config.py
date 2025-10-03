@@ -223,5 +223,14 @@ class ConfigStore:
     def set_key(self, uid: str, key: str) -> None:
         self.update_tokens(uid, key=key)
 
+    def update_payload(self, uid: str, payload: Dict[str, Any]) -> UCConfig:
+        uc = self.get_uc(uid)
+        uc.payload = dict(payload)
+        raw_entry = self._raw_data["unidades_consumidoras"][self._index[uid]]
+        raw_entry["payload"] = dict(payload)
+        raw_entry["updated_at"] = isoformat(utcnow())
+        self.save()
+        return uc
+
 
 __all__ = ["ConfigStore", "GlobalSettings", "UCConfig", "AuthTokens", "DEFAULT_CONFIG_PATH"]

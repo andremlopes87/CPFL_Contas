@@ -7,7 +7,7 @@ from typing import Optional
 
 from .cli import run_collector
 from .config import ConfigStore
-from .onboarding import ensure_config
+from .onboarding import ensure_config, review_sensitive_fields
 from .utils import setup_logging
 
 
@@ -23,6 +23,7 @@ def run(config_path: Path | None = None) -> int:
         return 2
 
     setup_logging("INFO")
+    review_sensitive_fields(store)
     settings = store.settings
     _show_uc_summary(store)
 
